@@ -35,7 +35,7 @@ fi
 # Step 1 — Get student domain
 # =============================================================================
 
-echo -e "${CYAN}[1/5]${NC} Enter your domain name (e.g. example7015ict.com):"
+echo -e "${CYAN}[1/6]${NC} Enter your domain name (e.g. example7015ict.com):"
 echo -e "      This is the domain you configured in Activity 2 BIND9."
 echo ""
 read -rp "      Domain: " STUDENT_DOMAIN
@@ -56,7 +56,7 @@ echo ""
 # Step 2 — Download templates from GitHub
 # =============================================================================
 
-echo -e "${CYAN}[2/5]${NC} Downloading config templates from GitHub..."
+echo -e "${CYAN}[2/6]${NC} Downloading config templates from GitHub..."
 
 TMP_DIR=$(mktemp -d)
 
@@ -67,12 +67,14 @@ if ! curl -fsSL "$MAINCF_URL" -o "$TMP_DIR/main.cf.template" 2>/dev/null; then
     echo ""
     echo "        If GitHub is unreachable, copy the template from the"
     echo "        Activity 3 guide and create /etc/postfix/main.cf manually."
+    rm -rf "$TMP_DIR"
     exit 1
 fi
 
 if ! curl -fsSL "$VIRTUAL_URL" -o "$TMP_DIR/virtual.template" 2>/dev/null; then
     echo -e "${RED}[ERROR]${NC} Failed to download virtual template."
     echo "        URL: $VIRTUAL_URL"
+    rm -rf "$TMP_DIR"
     exit 1
 fi
 
@@ -83,19 +85,20 @@ echo ""
 # Step 3 — Show templates and confirm before substituting
 # =============================================================================
 
-echo -e "${CYAN}[3/5]${NC} Review what will be installed:"
+echo -e "${CYAN}[3/6]${NC} Review what will be installed:"
 echo ""
 echo -e "  ${BOLD}--- /etc/postfix/main.cf ---${NC}"
-sed "s/YOURDOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/main.cf.template" | sed 's/^/  /'
+sed "s/DOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/main.cf.template" | sed 's/^/  /'
 echo ""
 echo -e "  ${BOLD}--- /etc/postfix/virtual ---${NC}"
-sed "s/YOURDOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/virtual.template" | sed 's/^/  /'
+sed "s/DOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/virtual.template" | sed 's/^/  /'
 echo ""
 
 read -rp "  Does this look correct? (yes/no): " CONFIRM
 if [[ ! "$CONFIRM" =~ ^[Yy] ]]; then
     echo ""
     echo -e "${YELLOW}[CANCELLED]${NC} No files were written. Edit the templates on GitHub and re-run."
+    rm -rf "$TMP_DIR"
     exit 0
 fi
 
@@ -105,7 +108,7 @@ echo ""
 # Step 4 — Substitute domain and install files
 # =============================================================================
 
-echo -e "${CYAN}[4/5]${NC} Installing config files..."
+echo -e "${CYAN}[4/6]${NC} Installing config files..."
 
 # Back up existing main.cf if it exists
 if [ -f /etc/postfix/main.cf ]; then
@@ -114,12 +117,40 @@ if [ -f /etc/postfix/main.cf ]; then
 fi
 
 # Write main.cf
-sed "s/YOURDOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/main.cf.template" > /etc/postfix/main.cf
+sed "s/DOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/main.cf.template" > /etc/postfix/main.cf
 echo -e "  ${GREEN}[DONE]${NC} /etc/postfix/main.cf written"
 
+# Verify no unreplaced placeholders remain
+if grep -qw "DOMAIN" /etc/postfix/main.cf; then
+    echo -e "  ${RED}[FAIL]${NC} Unreplaced placeholders found in main.cf — substitution failed:"
+    grep -nw "DOMAIN" /etc/postfix/main.cf | sed 's/^/         /'
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
+echo -e "  ${GREEN}[DONE]${NC} No unreplaced placeholders in main.cf"
+
+# Verify mydestination does not contain the bare domain (causes loop)
+if grep "^mydestination" /etc/postfix/main.cf | grep -qw "$STUDENT_DOMAIN"; then
+    echo -e "  ${RED}[FAIL]${NC} mydestination contains bare domain '$STUDENT_DOMAIN' — this causes a mail loop."
+    echo -e "         The template should only have: \$myhostname, localhost.localdomain, localhost"
+    echo -e "         Fix the template on GitHub and re-run."
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
+echo -e "  ${GREEN}[DONE]${NC} mydestination is correct — no mail loop risk"
+
 # Write virtual
-sed "s/YOURDOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/virtual.template" > /etc/postfix/virtual
+sed "s/DOMAIN/$STUDENT_DOMAIN/g" "$TMP_DIR/virtual.template" > /etc/postfix/virtual
 echo -e "  ${GREEN}[DONE]${NC} /etc/postfix/virtual written"
+
+# Verify no unreplaced placeholders remain
+if grep -qw "DOMAIN" /etc/postfix/virtual; then
+    echo -e "  ${RED}[FAIL]${NC} Unreplaced placeholders found in virtual — substitution failed:"
+    grep -nw "DOMAIN" /etc/postfix/virtual | sed 's/^/         /'
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
+echo -e "  ${GREEN}[DONE]${NC} No unreplaced placeholders in virtual"
 
 # Compile virtual alias database
 postmap /etc/postfix/virtual
@@ -131,10 +162,25 @@ rm -rf "$TMP_DIR"
 echo ""
 
 # =============================================================================
-# Step 5 — Verify
+# Step 5 — Restart Postfix
 # =============================================================================
 
-echo -e "${CYAN}[5/5]${NC} Verifying configuration..."
+echo -e "${CYAN}[5/6]${NC} Restarting Postfix..."
+
+if systemctl restart postfix; then
+    echo -e "  ${GREEN}[DONE]${NC} Postfix restarted successfully"
+else
+    echo -e "  ${RED}[FAIL]${NC} Postfix failed to restart — run: sudo journalctl -u postfix --no-pager | tail -20"
+    exit 1
+fi
+
+echo ""
+
+# =============================================================================
+# Step 6 — Verify
+# =============================================================================
+
+echo -e "${CYAN}[6/6]${NC} Verifying configuration..."
 echo ""
 
 # Check postfix config
@@ -156,6 +202,7 @@ echo ""
 echo -e "  ${BOLD}Key settings confirmed:${NC}"
 echo -e "  myhostname      = $(postconf -h myhostname 2>/dev/null)"
 echo -e "  mydomain        = $(postconf -h mydomain 2>/dev/null)"
+echo -e "  mydestination   = $(postconf -h mydestination 2>/dev/null)"
 echo -e "  inet_interfaces = $(postconf -h inet_interfaces 2>/dev/null)"
 echo -e "  home_mailbox    = $(postconf -h home_mailbox 2>/dev/null)"
 
@@ -187,10 +234,7 @@ echo "  1. Create system users (if not done already):"
 echo "       sudo adduser user1"
 echo "       sudo adduser user2"
 echo ""
-echo "  2. Restart Postfix:"
-echo "       sudo systemctl restart postfix"
-echo ""
-echo "  3. Continue to Part C — Dovecot must be installed before"
+echo "  2. Continue to Part C — Dovecot must be installed before"
 echo "     testing end-to-end delivery (the LMTP socket doesn't"
 echo "     exist until Dovecot is configured)."
 echo ""
